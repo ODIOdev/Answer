@@ -13,6 +13,7 @@ import {
   createProfile,
   finishCall,
   getDashboardStats,
+  getProfileById,
   getProfileByPhone,
   isSupabaseConfigured,
   listCalls,
@@ -93,7 +94,7 @@ function checkBasicAuth(header: string | string[] | undefined): boolean {
   const password = decoded.slice(sep + 1);
   return (
     safeEqual(username, process.env.ADMIN_USERNAME || "admin") &&
-    safeEqual(password, process.env.ADMIN_PASSWORD || "change-this-immediately")
+    safeEqual(password, process.env.ADMIN_PASSWORD || "CHANGE-THIS-PASSWORD")
   );
 }
 
@@ -104,13 +105,6 @@ function getTwilioClient() {
     throw new Error("Twilio is not configured");
   }
   return twilio(sid, token);
-}
-
-function mapTtsProvider(provider: string): "Google" | "Amazon" | "ElevenLabs" {
-  const value = provider.toLowerCase();
-  if (value === "amazon") return "Amazon";
-  if (value === "elevenlabs") return "ElevenLabs";
-  return "Google";
 }
 
 function pickVoice(voicePool: string[]): string {
@@ -157,31 +151,36 @@ function twimlHangup(): string {
   return response.toString();
 }
 
-function buildConversationRelayTwiml(input: {
-  disclosure: string;
-  ttsProvider: string;
-  voice: string;
-  profileId: string;
-}): string {
-  const urls = publicUrls();
-  const response = new twilio.twiml.VoiceResponse();
-  const connect = response.connect({
-    action: urls.connectAction,
+function buildConversationRelayTwiml(
+  profile: AgentProfile,
+  selectedVoice: string
+): string {
+  const publicBase = (process.env.PUBLIC_BASE_URL || resolvedHttpBase()).replace(
+    /\/$/,
+    ""
+  );
+  const wsBase = (process.env.WS_BASE_URL || resolvedWsBase()).replace(/\/$/, "");
+  const voiceResponse = new twilio.twiml.VoiceResponse();
+  const connect = voiceResponse.connect({
+    action: `${publicBase}/connect-action`,
     method: "POST",
   });
   const relay = connect.conversationRelay({
-    url: urls.conversationRelay,
-    welcomeGreeting: input.disclosure,
+    url: `${wsBase}/conversation-relay`,
+    welcomeGreeting: profile.disclosure || DEFAULT_DISCLOSURE,
     welcomeGreetingInterruptible: "any",
-    language: "en-US",
-    ttsProvider: mapTtsProvider(input.ttsProvider),
-    voice: input.voice,
-    transcriptionProvider: "Google",
-    speechModel: "telephony",
+    interruptible: "any",
+    preemptible: true,
   });
-  relay.parameter({ name: "selectedVoice", value: input.voice });
-  relay.parameter({ name: "profileId", value: input.profileId });
-  return response.toString();
+  relay.language({
+    code: "en-US",
+    ttsProvider: String(profile.tts_provider || "google"),
+    voice: selectedVoice,
+    transcriptionProvider: "google",
+  });
+  relay.parameter({ name: "selectedVoice", value: selectedVoice });
+  relay.parameter({ name: "profileId", value: profile.id });
+  return voiceResponse.toString();
 }
 
 function formValue(
@@ -193,30 +192,6 @@ function formValue(
   if (typeof value === "string") return value;
   if (typeof value === "number") return String(value);
   return undefined;
-}
-
-function parseHandoffData(raw: string | undefined): {
-  reasonCode?: string;
-  reason?: string;
-  transferNumber?: string;
-} {
-  if (!raw) return {};
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    if (parsed && typeof parsed === "object") {
-      const data = parsed as Record<string, unknown>;
-      return {
-        reasonCode: data.reasonCode ? String(data.reasonCode) : undefined,
-        reason: data.reason ? String(data.reason) : undefined,
-        transferNumber: data.transferNumber
-          ? String(data.transferNumber)
-          : undefined,
-      };
-    }
-  } catch {
-    return {};
-  }
-  return {};
 }
 
 function transferNumberFor(profile?: AgentProfile | null, override?: string): string | null {
@@ -252,8 +227,30 @@ async function persistTranscript(state: LiveCallState): Promise<void> {
   await saveTranscript(state.callSid, state.transcript);
 }
 
+async function decide(
+  profile: AgentProfile,
+  transcript: TranscriptTurn[],
+  question: string,
+  logger?: { error: (obj: unknown, msg?: string) => void }
+) {
+  return decideAgentResponse({ profile, transcript, question, logger });
+}
+
 void app.register(formbody);
 void app.register(websocket);
+
+function isFinalPrompt(message: ConversationRelayMessage): boolean {
+  if (message.type !== "prompt") return false;
+  return message.last === true || message.last === "true" || message.last === 1;
+}
+
+function socketText(raw: unknown): string {
+  if (typeof raw === "string") return raw;
+  if (Buffer.isBuffer(raw)) return raw.toString("utf8");
+  if (Array.isArray(raw)) return Buffer.concat(raw.map((item) => Buffer.from(item))).toString("utf8");
+  if (raw instanceof ArrayBuffer) return Buffer.from(raw).toString("utf8");
+  return String(raw ?? "");
+}
 
 async function escalateAndHandoff(
   socket: { readyState: number; send: (data: string) => void },
@@ -286,13 +283,16 @@ async function escalateAndHandoff(
     token: text,
     last: true,
     interruptible: true,
+    preemptible: true,
   });
-  await sleep(estimateSpeechMs(text));
+  if (socket.readyState === 1) {
+    await sleep(estimateSpeechMs(text));
+  }
   sendRelay(socket, {
     type: "end",
     handoffData: JSON.stringify({
       reasonCode: "live-agent-handoff",
-      reason,
+      reason: "Actual human verification required",
       transferNumber: transferNumberFor(state?.profile),
     }),
   });
@@ -300,6 +300,9 @@ async function escalateAndHandoff(
 
 app.addHook("onRequest", async (request, reply) => {
   const path = pathOf(request.url);
+  reply.header("X-Content-Type-Options", "nosniff");
+  reply.header("X-Frame-Options", "DENY");
+  reply.header("Referrer-Policy", "no-referrer");
   if (!needsAdmin(path)) return;
   if (checkBasicAuth(request.headers.authorization)) return;
   reply.header("WWW-Authenticate", 'Basic realm="AI Voice Platform"');
@@ -329,9 +332,16 @@ app.setErrorHandler((error, request, reply) => {
 app.get("/health", async () => ({
   ok: true,
   service: "ai-voice-platform",
+  providers: {
+    twilio: isTwilioConfigured(),
+    openai: isOpenAIConfigured(),
+    supabase: isSupabaseConfigured(),
+  },
+  voiceUrls: hasPublicVoiceUrls(),
 }));
 
 app.get("/", async (_request, reply) => {
+  reply.header("Cache-Control", "no-store");
   reply.type("text/html; charset=utf-8");
   return renderDashboard();
 });
@@ -383,6 +393,28 @@ app.put("/api/agents/:id", async (request, reply) => {
         ? null
         : parsed.data.human_transfer_number,
   };
+  const existing = await getProfileById(params.id);
+  if (!existing) {
+    return reply.code(404).send({ error: "Profile not found" });
+  }
+  const nextFacts = patch.authorized_facts ?? existing.authorized_facts;
+  const nextEnabled = patch.enabled ?? existing.enabled;
+  const nextTransfer =
+    patch.human_transfer_number === undefined
+      ? existing.human_transfer_number
+      : patch.human_transfer_number;
+  if (nextEnabled) {
+    if (!nextFacts || Object.keys(nextFacts).length === 0) {
+      return reply.code(400).send({
+        error: "Add authorized facts before enabling this agent.",
+      });
+    }
+    if (!nextTransfer) {
+      return reply.code(400).send({
+        error: "Set a human transfer number on this profile before enabling.",
+      });
+    }
+  }
   const profile = await updateProfile(params.id, patch);
   const warnings: string[] = [];
   if (profile.enabled && !transferNumberFor(profile)) {
@@ -438,17 +470,71 @@ app.post("/api/numbers/purchase", async (request, reply) => {
     statusCallback: urls.statusCallback,
     statusCallbackMethod: "POST",
   });
-  const profile = await createProfile({
-    label: parsed.data.label,
-    phone_number: incoming.phoneNumber,
-    twilio_phone_sid: incoming.sid,
-    enabled: false,
-  });
+  try {
+    const profile = await createProfile({
+      label: parsed.data.label,
+      phone_number: incoming.phoneNumber,
+      twilio_phone_sid: incoming.sid,
+      enabled: false,
+    });
+    return {
+      ok: true,
+      message:
+        "Purchased successfully. Configure approved facts and human transfer number, then enable the profile.",
+      profile,
+    };
+  } catch (error) {
+    request.log.error(
+      {
+        err: error instanceof Error ? error.message : "unknown",
+        twilioPhoneSid: incoming.sid,
+        phoneNumber: incoming.phoneNumber,
+      },
+      "Twilio number purchased but profile insert failed"
+    );
+    return reply.code(500).send({
+      error:
+        "Number was purchased in Twilio but the profile could not be saved. Do not purchase it again. Retry after Supabase is healthy.",
+      twilioPhoneSid: incoming.sid,
+      phoneNumber: incoming.phoneNumber,
+    });
+  }
+});
+
+app.post("/api/numbers/sync-webhooks", async (request, reply) => {
+  if (!hasPublicVoiceUrls()) {
+    return reply.code(400).send({
+      error: "Set PUBLIC_BASE_URL and WS_BASE_URL before syncing Twilio webhooks.",
+    });
+  }
+  const urls = publicUrls();
+  const client = getTwilioClient();
+  const profiles = await listProfiles();
+  const updated: string[] = [];
+  const failed: Array<{ phoneNumber: string | null; error: string }> = [];
+  for (const profile of profiles) {
+    if (!profile.twilio_phone_sid) continue;
+    try {
+      await client.incomingPhoneNumbers(profile.twilio_phone_sid).update({
+        voiceUrl: urls.voiceWebhook,
+        voiceMethod: "POST",
+        statusCallback: urls.statusCallback,
+        statusCallbackMethod: "POST",
+      });
+      if (profile.phone_number) updated.push(profile.phone_number);
+    } catch (error) {
+      failed.push({
+        phoneNumber: profile.phone_number,
+        error: error instanceof Error ? error.message : "unknown",
+      });
+    }
+  }
   return {
-    ok: true,
-    message:
-      "Purchased successfully. Configure approved facts and human transfer number, then enable the profile.",
-    profile,
+    ok: failed.length === 0,
+    updated: updated.length,
+    numbers: updated,
+    failed,
+    urls,
   };
 });
 
@@ -534,25 +620,53 @@ app.post("/voice", async (request, reply) => {
     );
   }
 
-  return sendTwiml(
-    reply,
-    buildConversationRelayTwiml({
-      disclosure: profile.disclosure || DEFAULT_DISCLOSURE,
-      ttsProvider: String(profile.tts_provider || "google"),
-      voice,
-      profileId: profile.id,
-    })
-  );
+  return reply.type("text/xml").send(buildConversationRelayTwiml(profile, voice));
 });
 
 app.post("/connect-action", async (request, reply) => {
-  const callSid = formValue(request.body, "CallSid") || "";
-  const handoff = parseHandoffData(
-    formValue(request.body, "HandoffData") || formValue(request.body, "handoffData")
-  );
+  const data = request.body as Record<string, unknown>;
+  let handoff: {
+    reasonCode?: string;
+    reason?: string;
+    transferNumber?: string;
+  } = {};
+  const rawHandoff = data?.HandoffData ?? data?.handoffData;
+  try {
+    if (rawHandoff && typeof rawHandoff === "object") {
+      handoff = rawHandoff as {
+        reasonCode?: string;
+        reason?: string;
+        transferNumber?: string;
+      };
+    } else {
+      handoff = JSON.parse(
+        (typeof rawHandoff === "string" && rawHandoff) || "{}"
+      );
+    }
+  } catch {
+    handoff = {};
+  }
 
-  if (handoff.reasonCode === "live-agent-handoff") {
-    const number = transferNumberFor(null, handoff.transferNumber);
+  const callSid = typeof data?.CallSid === "string" ? data.CallSid : "";
+  const callStatus = (
+    typeof data?.CallStatus === "string" ? data.CallStatus : ""
+  ).toLowerCase();
+  const sessionStatus = (
+    typeof data?.SessionStatus === "string" ? data.SessionStatus : ""
+  ).toLowerCase();
+  const to = typeof data?.To === "string" ? data.To : "";
+
+  const isHandoff = handoff.reasonCode === "live-agent-handoff";
+  const callStillUp =
+    !callStatus || callStatus === "in-progress" || callStatus === "ringing";
+  const unexpectedDrop =
+    !isHandoff &&
+    callStillUp &&
+    (sessionStatus === "failed" ||
+      sessionStatus === "error" ||
+      !handoff.reasonCode);
+
+  if (isHandoff && callSid) {
     try {
       await finishCall(callSid, {
         status: "human-handoff",
@@ -564,24 +678,40 @@ app.post("/connect-action", async (request, reply) => {
         "Failed to update call after handoff"
       );
     }
-    if (!number) {
-      return sendTwiml(
-        reply,
-        twimlSayHangup(
-          "An authorized human contact is currently required to complete this request."
-        )
-      );
-    }
-    return sendTwiml(
-      reply,
-      twimlSayDial(
-        "Please hold while I connect you to the authorized human contact.",
-        number
-      )
-    );
   }
 
-  return sendTwiml(reply, twimlHangup());
+  const response = new twilio.twiml.VoiceResponse();
+
+  if (isHandoff || unexpectedDrop) {
+    let number =
+      (typeof handoff.transferNumber === "string" && handoff.transferNumber) ||
+      process.env.DEFAULT_HUMAN_TRANSFER_NUMBER ||
+      "";
+    if (!number && to) {
+      try {
+        const profile = await getProfileByPhone(to, { enabledOnly: false });
+        number = transferNumberFor(profile) || "";
+      } catch (error) {
+        request.log.error(
+          { err: error instanceof Error ? error.message : "unknown", to },
+          "Failed to load transfer number after ConversationRelay ended"
+        );
+      }
+    }
+    if (number) {
+      response.say(
+        "Please hold while I connect you to the authorized human contact."
+      );
+      response.dial({ timeout: 25 }, number);
+    } else {
+      response.say(
+        "An authorized human contact is currently required to complete this request."
+      );
+      response.hangup();
+    }
+  }
+
+  reply.type("text/xml").send(response.toString());
 });
 
 app.post("/status", async (request, reply) => {
@@ -640,26 +770,33 @@ app.get("/conversation-relay", { websocket: true }, (socket, request) => {
 
   socket.on("message", (raw: Buffer | string) => {
     enqueue(async () => {
-      const text = typeof raw === "string" ? raw : raw.toString("utf8");
-      let msg: ConversationRelayMessage;
+      const text = socketText(raw);
+      let message: ConversationRelayMessage;
       try {
-        msg = JSON.parse(text) as ConversationRelayMessage;
+        message = JSON.parse(text) as ConversationRelayMessage;
       } catch {
         request.log.warn({ text }, "Ignoring malformed ConversationRelay message");
         return;
       }
 
-      if (msg.type === "setup") {
-        const callSid = String(msg.callSid || "");
-        const sessionId = String(msg.sessionId || "");
-        const from = String(msg.from || "");
-        const to = String(msg.to || "");
+      if (message.type === "setup") {
+        const callSid = String(message.callSid || "");
+        const sessionId = String(message.sessionId || "");
+        const from = String(message.from || "");
+        const to = String(message.to || "");
         const selectedVoice =
-          msg.customParameters?.selectedVoice || "en-US-Journey-O";
+          message.customParameters?.selectedVoice || "en-US-Journey-O";
 
         let profile: AgentProfile | null = null;
         try {
           profile = to ? await getProfileByPhone(to, { enabledOnly: true }) : null;
+          if (!profile) {
+            const profileId = message.customParameters?.profileId;
+            if (profileId) {
+              profile = await getProfileById(profileId);
+              if (profile && !profile.enabled) profile = null;
+            }
+          }
         } catch (error) {
           request.log.error(
             { err: error instanceof Error ? error.message : "unknown", to },
@@ -719,14 +856,14 @@ app.get("/conversation-relay", { websocket: true }, (socket, request) => {
         return;
       }
 
-      if (msg.type === "interrupt") {
+      if (message.type === "interrupt") {
         if (state) state.generation += 1;
         return;
       }
 
-      if (msg.type === "error") {
+      if (message.type === "error") {
         request.log.error(
-          { description: msg.description, callSid: state?.callSid },
+          { description: message.description, callSid: state?.callSid },
           "ConversationRelay error"
         );
         await escalateAndHandoff(
@@ -738,21 +875,22 @@ app.get("/conversation-relay", { websocket: true }, (socket, request) => {
         return;
       }
 
-      if (msg.type === "prompt" && msg.last === true) {
-        const question = (msg.voicePrompt || "").trim();
+      if (message.type === "prompt" && isFinalPrompt(message)) {
+        const question = (message.voicePrompt || "").trim();
         if (!question) return;
         if (!state) {
           await escalateAndHandoff(socket, null, "missing_session");
           return;
         }
 
+        const { profile, transcript } = state;
         const generation = state.generation;
         const turn: TranscriptTurn = {
           role: "operator",
           text: question,
           at: nowIso(),
         };
-        state.transcript.push(turn);
+        transcript.push(turn);
         logTranscript(state.callSid, turn);
 
         try {
@@ -766,12 +904,7 @@ app.get("/conversation-relay", { websocket: true }, (socket, request) => {
           return;
         }
 
-        const decision = await decideAgentResponse({
-          profile: state.profile,
-          transcript: state.transcript,
-          question,
-          logger: request.log,
-        });
+        const decision = await decide(profile, transcript, question, request.log);
 
         if (!state || generation !== state.generation) {
           return;
@@ -787,7 +920,7 @@ app.get("/conversation-relay", { websocket: true }, (socket, request) => {
           text: decision.text,
           at: nowIso(),
         };
-        state.transcript.push(answerTurn);
+        transcript.push(answerTurn);
         logTranscript(state.callSid, answerTurn);
         try {
           await persistTranscript(state);
@@ -820,7 +953,11 @@ app.get("/conversation-relay", { websocket: true }, (socket, request) => {
   });
 });
 
-if ((process.env.ADMIN_PASSWORD || "change-this-immediately") === "change-this-immediately") {
+const adminPassword = process.env.ADMIN_PASSWORD || "CHANGE-THIS-PASSWORD";
+if (
+  adminPassword === "CHANGE-THIS-PASSWORD" ||
+  adminPassword === "change-this-immediately"
+) {
   app.log.warn("ADMIN_PASSWORD is still the example value. Change it before production.");
 }
 

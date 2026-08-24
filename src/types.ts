@@ -35,6 +35,8 @@ export function assertSafeAuthorizedFacts(
   }
 }
 
+const e164Phone = /^\+[1-9]\d{7,14}$/;
+
 export const updateProfileSchema = z.object({
   label: z.string().trim().min(1).max(200).optional(),
   enabled: z.boolean().optional(),
@@ -45,7 +47,11 @@ export const updateProfileSchema = z.object({
     .trim()
     .max(32)
     .nullable()
-    .optional(),
+    .optional()
+    .refine(
+      (value) => value == null || value === "" || e164Phone.test(value),
+      "Human transfer number must be E.164, for example +15551234567"
+    ),
   voice_pool: z.array(z.string().trim().min(1)).min(1).max(32).optional(),
   authorized_facts: authorizedFactsSchema.optional(),
 });
@@ -119,7 +125,7 @@ export type ConversationRelayPrompt = {
   type: "prompt";
   voicePrompt?: string;
   lang?: string;
-  last?: boolean;
+  last?: boolean | string | number;
 };
 
 export type ConversationRelayInterrupt = {

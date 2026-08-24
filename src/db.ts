@@ -138,21 +138,59 @@ function requireData<T>(
   return data;
 }
 
+export function normalizePhone(phone: string): string {
+  const digits = phone.replace(/[^\d]/g, "");
+  if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
+  if (digits.length === 10) return `+1${digits}`;
+  if (digits.length > 0) return `+${digits}`;
+  return phone.trim();
+}
+
+function isDuplicateCallSid(error: { code?: string; message: string } | null): boolean {
+  if (!error) return false;
+  return error.code === "23505" || /duplicate key|call_sid/i.test(error.message);
+}
+
+export async function getProfileById(id: string): Promise<AgentProfile | null> {
+  const client = getSupabase();
+  const { data, error } = await client
+    .from("agent_profiles")
+    .select("*")
+    .eq("id", id)
+    .maybeSingle();
+  if (error) throw new Error(`getProfileById failed: ${error.message}`);
+  return data ? mapProfile(data as Record<string, unknown>) : null;
+}
+
 export async function getProfileByPhone(
   phone: string,
   options: { enabledOnly?: boolean } = {}
 ): Promise<AgentProfile | null> {
   const client = getSupabase();
-  let query = client
-    .from("agent_profiles")
-    .select("*")
-    .eq("phone_number", phone);
-  if (options.enabledOnly !== false) {
-    query = query.eq("enabled", true);
+  const enabledOnly = options.enabledOnly !== false;
+  const candidates = [...new Set([phone.trim(), normalizePhone(phone)].filter(Boolean))];
+
+  for (const candidate of candidates) {
+    let query = client
+      .from("agent_profiles")
+      .select("*")
+      .eq("phone_number", candidate);
+    if (enabledOnly) query = query.eq("enabled", true);
+    const { data, error } = await query.maybeSingle();
+    if (error) throw new Error(`getProfileByPhone failed: ${error.message}`);
+    if (data) return mapProfile(data as Record<string, unknown>);
   }
-  const { data, error } = await query.maybeSingle();
-  if (error) throw new Error(`getProfileByPhone failed: ${error.message}`);
-  return data ? mapProfile(data as Record<string, unknown>) : null;
+
+  let scan = client.from("agent_profiles").select("*");
+  if (enabledOnly) scan = scan.eq("enabled", true);
+  const { data: rows, error: scanError } = await scan;
+  if (scanError) throw new Error(`getProfileByPhone failed: ${scanError.message}`);
+  const wanted = normalizePhone(phone);
+  const match = (rows || []).find((row) => {
+    const stored = (row as Record<string, unknown>).phone_number;
+    return stored ? normalizePhone(String(stored)) === wanted : false;
+  });
+  return match ? mapProfile(match as Record<string, unknown>) : null;
 }
 
 export async function listProfiles(): Promise<AgentProfile[]> {
@@ -241,26 +279,31 @@ export async function createCall(input: {
   status?: string;
 }): Promise<CallSession> {
   const client = getSupabase();
-  const { data, error } = await client
+  const payload = {
+    call_sid: input.callSid,
+    profile_id: input.profileId,
+    from_number: input.fromNumber,
+    to_number: input.toNumber,
+    voice_name: input.voiceName,
+    status: input.status ?? "in-progress",
+    transcript: [],
+    started_at: new Date().toISOString(),
+    ended_at: null,
+    result: null,
+  };
+  const inserted = await client.from("call_sessions").insert(payload).select("*").single();
+  if (inserted.data) {
+    return mapCall(inserted.data as Record<string, unknown>);
+  }
+  if (!isDuplicateCallSid(inserted.error)) {
+    throw new Error(`createCall failed: ${inserted.error?.message || "unknown"}`);
+  }
+  const existing = await client
     .from("call_sessions")
-    .upsert(
-      {
-        call_sid: input.callSid,
-        profile_id: input.profileId,
-        from_number: input.fromNumber,
-        to_number: input.toNumber,
-        voice_name: input.voiceName,
-        status: input.status ?? "in-progress",
-        transcript: [],
-        started_at: new Date().toISOString(),
-        ended_at: null,
-        result: null,
-      },
-      { onConflict: "call_sid" }
-    )
     .select("*")
+    .eq("call_sid", input.callSid)
     .single();
-  const row = requireData(data, error, "createCall");
+  const row = requireData(existing.data, existing.error, "createCall");
   return mapCall(row as Record<string, unknown>);
 }
 
@@ -291,6 +334,14 @@ export async function saveTranscript(
   if (error) throw new Error(`saveTranscript failed: ${error.message}`);
 }
 
+const TERMINAL_CALL_STATUSES = new Set([
+  "completed",
+  "failed",
+  "busy",
+  "no-answer",
+  "canceled",
+]);
+
 export async function finishCall(
   callSid: string,
   input: {
@@ -300,10 +351,37 @@ export async function finishCall(
   }
 ): Promise<void> {
   const client = getSupabase();
+  const existing = await client
+    .from("call_sessions")
+    .select("status, result, ended_at")
+    .eq("call_sid", callSid)
+    .maybeSingle();
+  if (existing.error) {
+    throw new Error(`finishCall failed: ${existing.error.message}`);
+  }
+
+  const currentStatus = existing.data ? String(existing.data.status || "") : "";
+  const handedOff = currentStatus === "human-handoff";
+  const incomingTerminal = Boolean(
+    input.status && TERMINAL_CALL_STATUSES.has(input.status)
+  );
   const patch: Record<string, unknown> = {};
-  if (input.status) patch.status = input.status;
-  if (input.result !== undefined) patch.result = input.result;
-  if (input.endedAt !== undefined) patch.ended_at = input.endedAt;
+
+  if (handedOff) {
+    if (input.status === "human-handoff" && input.result !== undefined) {
+      patch.result = input.result;
+    }
+    if (input.endedAt !== undefined) {
+      patch.ended_at = input.endedAt;
+    } else if (incomingTerminal && !existing.data?.ended_at) {
+      patch.ended_at = new Date().toISOString();
+    }
+  } else {
+    if (input.status) patch.status = input.status;
+    if (input.result !== undefined) patch.result = input.result;
+    if (input.endedAt !== undefined) patch.ended_at = input.endedAt;
+  }
+
   if (Object.keys(patch).length === 0) return;
   const { error } = await client
     .from("call_sessions")

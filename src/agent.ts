@@ -9,41 +9,20 @@ import {
 const DEFAULT_MODEL = "gpt-5.4";
 const MAX_TRANSCRIPT_TURNS = 12;
 
-type ResponsesClient = {
-  responses: {
-    create: (body: {
-      model: string;
-      instructions: string;
-      input: string;
-      max_output_tokens: number;
-    }) => Promise<{
-      output_text?: string | null;
-      output?: Array<{
-        type?: string;
-        content?: Array<{ type?: string; text?: string }>;
-      }>;
-    }>;
-  };
-};
+function makeOpenAI() {
+  return new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY,
+  });
+}
 
-let openai: ResponsesClient | null = null;
+let openai: ReturnType<typeof makeOpenAI> | null = null;
 
-function getOpenAI(): ResponsesClient {
+function getOpenAI() {
   if (openai) return openai;
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
+  if (!process.env.OPENAI_API_KEY) {
     throw new Error("OPENAI_API_KEY is not configured");
   }
-  const OpenAIClient = OpenAI as unknown as new (opts: {
-    apiKey: string;
-    timeout: number;
-    maxRetries: number;
-  }) => ResponsesClient;
-  openai = new OpenAIClient({
-    apiKey,
-    timeout: 20_000,
-    maxRetries: 1,
-  });
+  openai = makeOpenAI();
   return openai;
 }
 
@@ -83,39 +62,31 @@ Profile label (not a personal identity): ${profile.label}
 Disclosure already played to the caller: ${profile.disclosure}`;
 }
 
-function buildInput(transcript: TranscriptTurn[], question: string): string {
-  const recent = transcript.slice(-MAX_TRANSCRIPT_TURNS);
-  const lines = recent.map((turn) => `[${turn.role}] ${turn.text}`);
-  return `Recent transcript:
-${lines.length ? lines.join("\n") : "(empty)"}
-
-Current caller question:
-${question}`;
+function toMessageRole(
+  role: TranscriptTurn["role"]
+): "user" | "assistant" | "system" {
+  if (role === "assistant") return "assistant";
+  if (role === "system") return "system";
+  return "user";
 }
 
-function extractOutputText(response: {
-  output_text?: string | null;
-  output?: Array<{
-    type?: string;
-    content?: Array<{ type?: string; text?: string }>;
-  }>;
-}): string {
-  if (typeof response.output_text === "string" && response.output_text.trim()) {
-    return response.output_text.trim();
+function previousConversation(
+  transcript: TranscriptTurn[],
+  operatorQuestion: string
+): Array<{ role: "user" | "assistant" | "system"; content: string }> {
+  const turns = [...transcript];
+  const last = turns.at(-1);
+  if (last?.role === "operator" && last.text === operatorQuestion) {
+    turns.pop();
   }
-  const parts: string[] = [];
-  for (const item of response.output ?? []) {
-    if (item.type !== "message") continue;
-    for (const content of item.content ?? []) {
-      if (content.type === "output_text" && content.text) {
-        parts.push(content.text);
-      }
-    }
-  }
-  return parts.join("\n").trim();
+  return turns.slice(-MAX_TRANSCRIPT_TURNS).map((turn) => ({
+    role: toMessageRole(turn.role),
+    content: turn.text,
+  }));
 }
 
 export function parseAgentOutput(raw: string): AgentDecision {
+  // Example success: "ANSWER: JOB-48291" → speak "JOB-48291"
   const text = raw.replace(/^\uFEFF/, "").trim();
   const answerMatch = text.match(/^ANSWER:\s*([\s\S]+)$/i);
   if (answerMatch) {
@@ -157,18 +128,29 @@ export async function decideAgentResponse(input: {
 
   try {
     const client = getOpenAI();
-    const response = await client.responses.create({
-      model: process.env.OPENAI_MODEL || DEFAULT_MODEL,
-      instructions: buildInstructions(input.profile),
-      input: buildInput(input.transcript, input.question),
-      max_output_tokens: 120,
-    });
+    const systemInstructions = buildInstructions(input.profile);
+    const operatorQuestion = input.question;
+    const response = await client.responses.create(
+      {
+        model: process.env.OPENAI_MODEL || DEFAULT_MODEL,
+        instructions: systemInstructions,
+        input: [
+          ...previousConversation(input.transcript, operatorQuestion),
+          {
+            role: "user",
+            content: operatorQuestion,
+          },
+        ],
+        max_output_tokens: 120,
+      },
+      { timeout: 12_000 }
+    );
 
-    const raw = extractOutputText(response);
-    if (!raw) {
+    const answer = response.output_text;
+    if (!answer?.trim()) {
       return escalateDecision("empty_model_output");
     }
-    return parseAgentOutput(raw);
+    return parseAgentOutput(answer);
   } catch (error) {
     input.logger?.error(
       { err: error instanceof Error ? error.message : "unknown" },

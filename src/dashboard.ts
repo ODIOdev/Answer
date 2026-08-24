@@ -110,9 +110,10 @@ export function renderDashboard(): string {
       border-radius: 10px;
       padding: 8px 12px;
     }
-    .grid-3, .grid-2 { display: grid; gap: 16px; }
+    .grid-3, .grid-2, .lanes { display: grid; gap: 16px; }
     .grid-3 { grid-template-columns: repeat(3, 1fr); }
     .grid-2 { grid-template-columns: 1.15fr 0.85fr; }
+    .lanes { grid-template-columns: repeat(3, 1fr); margin-top: 12px; }
     .card {
       background: linear-gradient(180deg, var(--panel), var(--panel-2));
       border: 1px solid var(--line);
@@ -196,6 +197,31 @@ export function renderDashboard(): string {
     .page { display: none; }
     .page.active { display: block; }
     .help { color: var(--muted); font-size: 13px; line-height: 1.55; }
+    .setup-list {
+      list-style: none;
+      margin: 8px 0 0;
+      padding: 0;
+      display: grid;
+      gap: 8px;
+    }
+    .setup-list li {
+      display: grid;
+      grid-template-columns: 32px 1fr;
+      gap: 12px;
+      align-items: center;
+    }
+    .setup-list .n {
+      width: 32px;
+      height: 32px;
+      border-radius: 999px;
+      display: grid;
+      place-items: center;
+      background: rgba(59, 130, 246, 0.16);
+      border: 1px solid rgba(96, 165, 250, 0.28);
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .setup-list .t { font-size: 13px; }
     .kv { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
     .webhook {
       display: grid;
@@ -217,7 +243,7 @@ export function renderDashboard(): string {
       }
       .sidebar.open { transform: none; }
       .menu { display: inline-flex; }
-      .grid-3, .grid-2 { grid-template-columns: 1fr; }
+      .grid-3, .grid-2, .lanes { grid-template-columns: 1fr; }
       .content { padding: 18px; }
     }
   </style>
@@ -255,31 +281,53 @@ export function renderDashboard(): string {
           <div class="card stat"><div class="label">Total Calls</div><div class="value" id="statCalls">0</div></div>
           <div class="card stat"><div class="label">Active Calls</div><div class="value" id="statActive">0</div></div>
         </div>
+        <div class="error" id="dashboardError"></div>
         <div class="grid-2" style="margin-top:16px">
           <div class="card">
             <h3>System architecture</h3>
             <div class="flow">
-              <div class="flow-step">Caller</div>
-              <div class="flow-join">↓</div>
-              <div class="flow-step">Twilio Number</div>
+              <div class="flow-step">Phone call</div>
               <div class="flow-join">↓</div>
               <div class="flow-step">POST /voice</div>
               <div class="flow-join">↓</div>
-              <div class="flow-step">ConversationRelay</div>
+              <div class="flow-step">&lt;Connect&gt;</div>
               <div class="flow-join">↓</div>
-              <div class="flow-step">WebSocket</div>
+              <div class="flow-step">&lt;ConversationRelay&gt;</div>
               <div class="flow-join">↓</div>
-              <div class="flow-step">OpenAI + Supabase</div>
-              <div class="flow-join">↓</div>
-              <div class="flow-step">Twilio TTS</div>
-              <div class="flow-join">↓</div>
-              <div class="flow-step">Caller</div>
+              <div class="flow-step">WSS connection</div>
             </div>
           </div>
           <div class="card">
             <h3>Operating rules</h3>
             <p class="help">This system is a disclosed automated authorized assistant. It does not claim to be human, impersonate a person, or invent verification data. If a caller needs identity, signature, consent, credentials, or a fact that is not in authorized_facts, the call is transferred to the configured human number.</p>
             <p class="help">Voice pool entries only change synthetic TTS presentation. Every call remains the same automated assistant.</p>
+          </div>
+        </div>
+        <div class="card" style="margin-top:16px">
+          <h3>Number isolation</h3>
+          <p class="help">Inbound To selects one enabled profile. That call can speak only that profile's authorized facts. Number 1 never sees Number 2's facts.</p>
+          <div class="lanes">
+            <div class="flow">
+              <div class="flow-step">PHONE NUMBER #1</div>
+              <div class="flow-join">↓</div>
+              <div class="flow-step">PROFILE #1</div>
+              <div class="flow-join">↓</div>
+              <div class="flow-step">AUTHORIZED FACTS #1</div>
+            </div>
+            <div class="flow">
+              <div class="flow-step">PHONE NUMBER #2</div>
+              <div class="flow-join">↓</div>
+              <div class="flow-step">PROFILE #2</div>
+              <div class="flow-join">↓</div>
+              <div class="flow-step">AUTHORIZED FACTS #2</div>
+            </div>
+            <div class="flow">
+              <div class="flow-step">PHONE NUMBER #3</div>
+              <div class="flow-join">↓</div>
+              <div class="flow-step">PROFILE #3</div>
+              <div class="flow-join">↓</div>
+              <div class="flow-step">AUTHORIZED FACTS #3</div>
+            </div>
           </div>
         </div>
       </section>
@@ -340,7 +388,7 @@ export function renderDashboard(): string {
           <p class="help">One exact supported ConversationRelay voice identifier per line. Voices are presentation only and must match the selected TTS provider.</p>
           <label for="profileFacts">Authorized Facts</label>
           <textarea id="profileFacts"></textarea>
-          <p class="help">JSON object only. Include disclosable business facts such as company_name or contract_id. Do not store passwords, PINs, full SSNs, card numbers, or security answers.</p>
+          <p class="help">JSON object only for this phone number's profile. Include disclosable business facts such as company_name or contract_id. Do not store passwords, PINs, full SSNs, card numbers, or security answers. Facts on this profile are never used by other numbers.</p>
           <div class="actions">
             <button class="primary" id="saveProfile" type="button">Save</button>
           </div>
@@ -375,6 +423,32 @@ export function renderDashboard(): string {
       </section>
 
       <section class="page" id="page-setup">
+        <div class="card" style="margin-bottom:16px">
+          <h3>Setup sequence</h3>
+          <p class="help">Follow these steps in order. Do not enable a number until authorized facts and a human transfer number are saved.</p>
+          <ol class="setup-list">
+            <li><span class="n">1</span><span class="t">Paste MASTER PROMPT into Cursor</span></li>
+            <li><span class="n">2</span><span class="t">Let Cursor build project</span></li>
+            <li><span class="n">3</span><span class="t">Create Twilio account</span></li>
+            <li><span class="n">4</span><span class="t">Create OpenAI API account</span></li>
+            <li><span class="n">5</span><span class="t">Create Supabase account</span></li>
+            <li><span class="n">6</span><span class="t">Run SUPABASE SQL</span></li>
+            <li><span class="n">7</span><span class="t">Put API keys into .env</span></li>
+            <li><span class="n">8</span><span class="t">npm install</span></li>
+            <li><span class="n">9</span><span class="t">npm run dev</span></li>
+            <li><span class="n">10</span><span class="t">Deploy server</span></li>
+            <li><span class="n">11</span><span class="t">Put deployed HTTPS/WSS URLs in .env</span></li>
+            <li><span class="n">12</span><span class="t">Open dashboard</span></li>
+            <li><span class="n">13</span><span class="t">Phone Numbers</span></li>
+            <li><span class="n">14</span><span class="t">Search area code</span></li>
+            <li><span class="n">15</span><span class="t">Purchase number</span></li>
+            <li><span class="n">16</span><span class="t">Agent Profiles</span></li>
+            <li><span class="n">17</span><span class="t">Enter authorized information</span></li>
+            <li><span class="n">18</span><span class="t">Enter human transfer number</span></li>
+            <li><span class="n">19</span><span class="t">Enable agent</span></li>
+            <li><span class="n">20</span><span class="t">Call the number</span></li>
+          </ol>
+        </div>
         <div class="grid-2">
           <div class="card">
             <h3>Provider configuration</h3>
@@ -383,6 +457,11 @@ export function renderDashboard(): string {
             <p class="help"><strong>SUPABASE</strong><br>Used for profiles, contracts, approved facts, calls, and transcripts.<br>Variables: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY</p>
             <p class="help"><strong>VOICE SERVER</strong><br>PUBLIC_BASE_URL example: https://voice.company.com<br>WS_BASE_URL example: wss://voice.company.com</p>
             <p class="help">Secrets stay on the server. They are never sent to this dashboard.</p>
+            <div class="actions">
+              <button class="secondary" id="syncWebhooks" type="button">Sync Twilio webhooks</button>
+            </div>
+            <div class="okmsg" id="setupOk"></div>
+            <div class="error" id="setupError"></div>
           </div>
           <div class="card">
             <h3>Webhook map</h3>
@@ -402,7 +481,7 @@ export function renderDashboard(): string {
       numbers: ["Phone Numbers", "Search and purchase Twilio numbers, then configure the agent before enabling it."],
       agents: ["Agent Profiles", "Approved facts, transfer number, disclosure, and voice pool for each line."],
       calls: ["Calls", "Newest sessions first. Refresh after placing a test call."],
-      setup: ["API Setup", "Server-side provider variables and the Twilio webhook map."]
+      setup: ["API Setup", "Twenty-step stand-up: providers, SQL, env, deploy, then purchase and enable a number."]
     };
     const titles = {
       dashboard: pages.dashboard,
@@ -461,20 +540,31 @@ export function renderDashboard(): string {
     });
 
     async function loadDashboard() {
-      const data = await api("/api/dashboard");
-      $("statProfiles").textContent = data.stats.agentProfiles;
-      $("statCalls").textContent = data.stats.totalCalls;
-      $("statActive").textContent = data.stats.activeCalls;
-      $("urlVoice").textContent = data.urls.voiceWebhook;
-      $("urlRelay").textContent = data.urls.conversationRelay;
-      $("urlConnect").textContent = data.urls.connectAction;
-      $("urlStatus").textContent = data.urls.statusCallback;
-      $("providerStatus").textContent =
-        "Configured on this server — Twilio: " + (data.providers.twilio ? "yes" : "no") +
-        ", OpenAI: " + (data.providers.openai ? "yes" : "no") +
-        ", Supabase: " + (data.providers.supabase ? "yes" : "no") + ".";
+      hide($("dashboardError"));
+      try {
+        const data = await api("/api/dashboard");
+        $("statProfiles").textContent = data.stats.agentProfiles;
+        $("statCalls").textContent = data.stats.totalCalls;
+        $("statActive").textContent = data.stats.activeCalls;
+        $("urlVoice").textContent = data.urls.voiceWebhook;
+        $("urlRelay").textContent = data.urls.conversationRelay;
+        $("urlConnect").textContent = data.urls.connectAction;
+        $("urlStatus").textContent = data.urls.statusCallback;
+        $("providerStatus").textContent =
+          "Configured on this server — Twilio: " + (data.providers.twilio ? "yes" : "no") +
+          ", OpenAI: " + (data.providers.openai ? "yes" : "no") +
+          ", Supabase: " + (data.providers.supabase ? "yes" : "no") + ".";
+      } catch (err) {
+        show($("dashboardError"), err.message);
+      }
     }
 
+    $("areaCode").addEventListener("keydown", function (event) {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        $("searchNumbers").click();
+      }
+    });
     $("searchNumbers").addEventListener("click", async function () {
       hide($("numbersError"));
       hide($("numbersNotice"));
@@ -535,10 +625,11 @@ export function renderDashboard(): string {
       $("profileTransfer").value = profile && profile.human_transfer_number ? profile.human_transfer_number : "";
       $("profileVoices").value = profile && profile.voice_pool ? profile.voice_pool.join("\\n") : "en-US-Journey-O";
       $("profileFacts").value = JSON.stringify(profile && profile.authorized_facts ? profile.authorized_facts : {
-        company_name: "Example Contracting LLC",
+        company_name: "ABC Contracting LLC",
         contract_id: "JOB-48291",
         service_type: "Warehouse Maintenance",
-        authorized_contact: "Operations Desk",
+        authorized_contact: "Operations Department",
+        job_location: "Jersey City, NJ",
         approved_start_date: "2026-08-31"
       }, null, 2);
     }
@@ -587,26 +678,38 @@ export function renderDashboard(): string {
         show($("agentsError"), "Authorized facts must be valid JSON.");
         return;
       }
+      const transfer = $("profileTransfer").value.replace(/\\s+/g, "");
+      const enabled = $("profileEnabled").value === "true";
+      if (enabled && Object.keys(facts).length === 0) {
+        show($("agentsError"), "Add authorized facts before enabling this agent.");
+        return;
+      }
+      if (enabled && !transfer) {
+        show($("agentsError"), "Set a human transfer number before enabling this agent.");
+        return;
+      }
       const voicePool = $("profileVoices").value.split(/\\r?\\n/).map(function (item) { return item.trim(); }).filter(Boolean);
       if (!voicePool.length) {
         show($("agentsError"), "Add at least one ConversationRelay voice identifier.");
         return;
       }
       try {
-        await api("/api/agents/" + encodeURIComponent(profile.id), {
+        const result = await api("/api/agents/" + encodeURIComponent(profile.id), {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             label: $("profileLabel").value,
-            enabled: $("profileEnabled").value === "true",
+            enabled: enabled,
             disclosure: $("profileDisclosure").value,
             tts_provider: $("profileTts").value,
-            human_transfer_number: $("profileTransfer").value || null,
+            human_transfer_number: transfer || null,
             voice_pool: voicePool,
             authorized_facts: facts
           })
         });
-        show($("agentsOk"), "Profile saved. Enable the profile only after facts and the human transfer number are approved.");
+        show($("agentsOk"), result && result.warnings && result.warnings.length
+          ? result.warnings.join(" ")
+          : "Profile saved. Enable the profile only after facts and the human transfer number are approved.");
         loadProfiles();
         loadDashboard();
       } catch (err) {
@@ -642,6 +745,17 @@ export function renderDashboard(): string {
       }
     }
     $("refreshCalls").addEventListener("click", loadCalls);
+
+    $("syncWebhooks").addEventListener("click", async function () {
+      hide($("setupError"));
+      hide($("setupOk"));
+      try {
+        const result = await api("/api/numbers/sync-webhooks", { method: "POST" });
+        show($("setupOk"), "Updated " + result.updated + " Twilio number webhook(s) to this server.");
+      } catch (err) {
+        show($("setupError"), err.message);
+      }
+    });
 
     loadDashboard().catch(function (err) {
       console.error(err);

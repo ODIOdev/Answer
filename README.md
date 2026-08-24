@@ -22,20 +22,20 @@ Every call is the same disclosed automated assistant. A voice may be chosen at r
 ## 2. Architecture
 
 ```
-Caller
-  ↓
-Twilio Number
-  ↓
+Phone call
+     ↓
 POST /voice
-  ↓
-ConversationRelay
-  ↓
-WebSocket  GET /conversation-relay
-  ↓
+     ↓
+<Connect>
+     ↓
+<ConversationRelay>
+     ↓
+WSS connection
+     ↓
 OpenAI Responses API  +  Supabase
-  ↓
+     ↓
 Twilio TTS
-  ↓
+     ↓
 Caller
 
 Human handoff:
@@ -47,7 +47,94 @@ Admin UI is served by the same Fastify process at `GET /`. There is no separate 
 
 ---
 
-## 3. Required providers
+## 3. Setup sequence
+
+```
+1
+Paste MASTER PROMPT into Cursor
+        ↓
+
+2
+Let Cursor build project
+        ↓
+
+3
+Create Twilio account
+        ↓
+
+4
+Create OpenAI API account
+        ↓
+
+5
+Create Supabase account
+        ↓
+
+6
+Run SUPABASE SQL
+        ↓
+
+7
+Put API keys into .env
+        ↓
+
+8
+npm install
+        ↓
+
+9
+npm run dev
+        ↓
+
+10
+Deploy server
+        ↓
+
+11
+Put deployed HTTPS/WSS URLs in .env
+        ↓
+
+12
+Open dashboard
+        ↓
+
+13
+Phone Numbers
+        ↓
+
+14
+Search area code
+        ↓
+
+15
+Purchase number
+        ↓
+
+16
+Agent Profiles
+        ↓
+
+17
+Enter authorized information
+        ↓
+
+18
+Enter human transfer number
+        ↓
+
+19
+Enable agent
+        ↓
+
+20
+Call the number
+```
+
+Detailed provider, SQL, env, and deploy steps follow below. Do not enable a purchased number until authorized facts and a human transfer number are saved.
+
+---
+
+## 4. Required providers
 
 | Provider | Role |
 | --- | --- |
@@ -60,7 +147,7 @@ Do not put `SUPABASE_SERVICE_ROLE_KEY`, `TWILIO_AUTH_TOKEN`, or `OPENAI_API_KEY`
 
 ---
 
-## 4. Twilio setup
+## 5. Twilio setup
 
 1. Create a Twilio account.
 2. Enable Programmable Voice.
@@ -86,7 +173,7 @@ Set `TWILIO_VALIDATE_SIGNATURES=true` in production.
 
 ---
 
-## 5. OpenAI setup
+## 6. OpenAI setup
 
 1. Create an OpenAI API project.
 2. Add billing.
@@ -98,7 +185,7 @@ The agent requires exactly `ANSWER: ...` or `ESCALATE: ...`. Anything else fails
 
 ---
 
-## 6. Supabase setup
+## 7. Supabase setup
 
 1. Create a Supabase project.
 2. Open **SQL Editor**.
@@ -114,7 +201,7 @@ Row Level Security is enabled. The voice server uses the service role, which byp
 
 ---
 
-## 7. Environment setup
+## 8. Environment setup
 
 ```bash
 cp .env.example .env
@@ -140,7 +227,7 @@ Twilio webhooks (`/voice`, `/status`, `/connect-action`, `/conversation-relay`) 
 
 ---
 
-## 8. Local development
+## 9. Local development
 
 Requires Node.js 22+.
 
@@ -163,7 +250,7 @@ WS_BASE_URL=wss://your-tunnel.example
 
 ---
 
-## 9. Deployment
+## 10. Deployment
 
 Production hosting is **Vercel** (Fastify + Fluid Compute WebSockets) with GitHub as the source of truth.
 
@@ -181,11 +268,11 @@ docker build -t ai-voice-platform .
 docker run --env-file .env -p 3001:3001 ai-voice-platform
 ```
 
-After deploy, confirm `/health` returns `{"ok":true,...}` and that `PUBLIC_BASE_URL` / `WS_BASE_URL` match the public hostname.
+After deploy, confirm `/health` returns provider flags and `voiceUrls: true`, then use **API Setup → Sync Twilio webhooks** so purchased numbers point at this hostname.
 
 ---
 
-## 10. Buying the first number
+## 11. Buying the first number
 
 1. Sign in to the dashboard.
 2. Open **Phone Numbers**.
@@ -197,7 +284,7 @@ The number is created in Twilio with `voiceUrl=/voice` and `statusCallback=/stat
 
 ---
 
-## 11. Creating the first agent
+## 12. Creating the first agent
 
 1. Open **Agent Profiles**.
 2. Select the purchased number.
@@ -207,10 +294,11 @@ The number is created in Twilio with `voiceUrl=/voice` and `statusCallback=/stat
 
 ```json
 {
-  "company_name": "Example Contracting LLC",
+  "company_name": "ABC Contracting LLC",
   "contract_id": "JOB-48291",
   "service_type": "Warehouse Maintenance",
-  "authorized_contact": "Operations Desk",
+  "authorized_contact": "Operations Department",
+  "job_location": "Jersey City, NJ",
   "approved_start_date": "2026-08-31"
 }
 ```
@@ -220,7 +308,7 @@ The number is created in Twilio with `voiceUrl=/voice` and `statusCallback=/stat
 
 ---
 
-## 12. Testing the first call
+## 13. Testing the first call
 
 1. Call the purchased number.
 2. Hear the disclosure.
@@ -230,7 +318,7 @@ The number is created in Twilio with `voiceUrl=/voice` and `statusCallback=/stat
 
 ---
 
-## 13. Human transfer
+## 14. Human transfer
 
 The model returns `ESCALATE` when:
 
@@ -248,17 +336,41 @@ The WebSocket then speaks a short explanation and sends:
 }
 ```
 
-Twilio invokes `POST /connect-action`. If `reasonCode` is `live-agent-handoff`, the server returns `<Say>` plus `<Dial>` to the profile transfer number, or `DEFAULT_HUMAN_TRANSFER_NUMBER`. If no number exists, the caller is told that an authorized human contact is required and the call ends.
+Twilio invokes `POST /connect-action`. If `reasonCode` is `live-agent-handoff`, the server returns `<Say>` ("Please hold while I connect you to the authorized human contact.") plus `<Dial>` to `handoff.transferNumber`, then `DEFAULT_HUMAN_TRANSFER_NUMBER` if needed. If the ConversationRelay socket drops while the call is still up, the same transfer path is used so the caller is not left in silence. Dial waits 25 seconds; if no number is configured, the caller hears that an authorized human contact is required and the call ends.
 
 ---
 
-## 14. Multi-number architecture
+## 15. Multi-number architecture
 
-Each Twilio number maps to one `agent_profiles` row (`phone_number` unique). Inbound `To` selects the enabled profile. Facts, disclosure, voice pool, and transfer number are per profile, so Contract A and Contract B can share one server without sharing facts.
+Each Twilio number maps to one `agent_profiles` row (`phone_number` unique). Inbound `To` selects that enabled profile. The assistant for that call may speak only that profile's `authorized_facts`. Number 1 never receives Number 2's facts.
+
+```
+PHONE NUMBER #1
+     ↓
+PROFILE #1
+     ↓
+AUTHORIZED FACTS #1
+
+
+PHONE NUMBER #2
+     ↓
+PROFILE #2
+     ↓
+AUTHORIZED FACTS #2
+
+
+PHONE NUMBER #3
+     ↓
+PROFILE #3
+     ↓
+AUTHORIZED FACTS #3
+```
+
+Disclosure, TTS voice pool, and human transfer number are also per profile. One server can answer many contracts without sharing facts.
 
 ---
 
-## 15. Multi-call architecture
+## 16. Multi-call architecture
 
 Each ConversationRelay WebSocket keeps its own `LiveCallState` (CallSid, SessionId, profile, voice, transcript). Transcripts are not shared across connections. Persistent data is written to `call_sessions` in Supabase.
 
@@ -266,20 +378,22 @@ This process can handle multiple simultaneous calls in one Node instance. If you
 
 ---
 
-## 16. Production checklist
+## 17. Production checklist
 
 - [ ] Node 22+ host with persistent WebSockets and TLS
 - [ ] `PUBLIC_BASE_URL` https and `WS_BASE_URL` wss on the same hostname (or Vercel production URL fallbacks)
 - [ ] Supabase schema applied; service role key only on the server
 - [ ] Twilio ConversationRelay onboarding / AI addendum complete
 - [ ] `TWILIO_VALIDATE_SIGNATURES=true`
-- [ ] `ADMIN_PASSWORD` is not `change-this-immediately`
+- [ ] Twilio Account SID/token, OpenAI API key, and Supabase URL + service role are set on the host
+- [ ] `ADMIN_PASSWORD` is not `CHANGE-THIS-PASSWORD`
 - [ ] Each enabled profile has approved `authorized_facts` and a human transfer number
 - [ ] Profiles stay disabled until facts and transfer are reviewed
 - [ ] No passwords, PINs, full SSNs, or card numbers in `authorized_facts`
 - [ ] Disclosure clearly identifies an automated assistant
 - [ ] Voice pool used only for TTS variety, never as multiple people
-- [ ] `/health` and a test call verified after deploy
+- [ ] After URL changes, **API Setup → Sync Twilio webhooks**
+- [ ] `/health` shows `twilio`, `openai`, `supabase`, and `voiceUrls` true, then a test call succeeds
 
 ---
 

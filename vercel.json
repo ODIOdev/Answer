@@ -1,4 +1,9 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "fluid": true
+  "fluid": true,
+  "functions": {
+    "src/server.ts": {
+      "maxDuration": 800
+    }
+  }
 }
