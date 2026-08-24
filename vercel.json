@@ -1,11 +1,5 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": "fastify",
-  "fluid": true,
-  "functions": {
-    "src/server.ts": {
-      "maxDuration": 800,
-      "memory": 1024
-    }
-  }
+  "fluid": true
 }
