@@ -822,19 +822,7 @@ app.get("/conversation-relay", { websocket: true }, (socket, request) => {
 
 export default app;
 
-async function startLocal() {
-  if ((process.env.ADMIN_PASSWORD || "change-this-immediately") === "change-this-immediately") {
-    app.log.warn("ADMIN_PASSWORD is still the example value. Change it before production.");
-  }
-  const port = Number(process.env.PORT || 3001);
-  await app.listen({ port, host: "0.0.0.0" });
-  app.log.info(`AI Voice Platform listening on 0.0.0.0:${port}`);
-}
-
-if (process.env.VERCEL) {
-  // Vercel intercepts listen() and serves the Fastify app as a Fluid function.
-  void app.listen({ port: Number(process.env.PORT) || 3000 });
-} else {
+if (!process.env.VERCEL) {
   const shutdown = async () => {
     try {
       await app.close();
@@ -848,7 +836,14 @@ if (process.env.VERCEL) {
   process.on("SIGTERM", () => {
     void shutdown();
   });
-  startLocal().catch((error: unknown) => {
+  void (async () => {
+    if ((process.env.ADMIN_PASSWORD || "change-this-immediately") === "change-this-immediately") {
+      app.log.warn("ADMIN_PASSWORD is still the example value. Change it before production.");
+    }
+    const port = Number(process.env.PORT || 3001);
+    await app.listen({ port, host: "0.0.0.0" });
+    app.log.info(`AI Voice Platform listening on 0.0.0.0:${port}`);
+  })().catch((error: unknown) => {
     console.error(error);
     process.exit(1);
   });
