@@ -40,8 +40,6 @@ import {
   type TranscriptTurn,
 } from "./types.js";
 
-const PORT = Number(process.env.PORT || 3001);
-
 const app = Fastify({
   logger: true,
   trustProxy: true,
@@ -828,27 +826,26 @@ async function start() {
   if ((process.env.ADMIN_PASSWORD || "change-this-immediately") === "change-this-immediately") {
     app.log.warn("ADMIN_PASSWORD is still the example value. Change it before production.");
   }
-  await app.listen({ port: PORT, host: "0.0.0.0" });
-  app.log.info(`AI Voice Platform listening on 0.0.0.0:${PORT}`);
+  const port = Number(process.env.PORT || 3001);
+  await app.listen({ port, host: "0.0.0.0" });
+  app.log.info(`AI Voice Platform listening on 0.0.0.0:${port}`);
 }
 
-if (!process.env.VERCEL) {
-  const shutdown = async () => {
-    try {
-      await app.close();
-    } finally {
-      process.exit(0);
-    }
-  };
-  process.on("SIGINT", () => {
-    void shutdown();
-  });
-  process.on("SIGTERM", () => {
-    void shutdown();
-  });
+const shutdown = async () => {
+  try {
+    await app.close();
+  } finally {
+    process.exit(0);
+  }
+};
+process.on("SIGINT", () => {
+  void shutdown();
+});
+process.on("SIGTERM", () => {
+  void shutdown();
+});
 
-  start().catch((error: unknown) => {
-    console.error(error);
-    process.exit(1);
-  });
-}
+start().catch((error: unknown) => {
+  console.error(error);
+  process.exit(1);
+});
