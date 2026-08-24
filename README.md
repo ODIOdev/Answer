@@ -167,8 +167,8 @@ WS_BASE_URL=wss://your-tunnel.example
 
 Production hosting is **Vercel** (Fastify + Fluid Compute WebSockets) with GitHub as the source of truth.
 
-1. Push to the private GitHub repo `ODIOdev/Answer`.
-2. Vercel project **ANSWER** (`over-drive0s-projects`) deploys from `main`. Until the [Vercel GitHub App](https://github.com/settings/installations/147283185) includes this private repo, `.github/workflows/deploy.yml` deploys on push.
+1. Push to the public GitHub repo `ODIOdev/Answer`.
+2. Vercel project **ANSWER** (`over-drive0s-projects`) deploys from `main`. Until the [Vercel GitHub App](https://github.com/settings/installations/147283185) includes this repo, `.github/workflows/deploy.yml` deploys on push.
 3. Set environment variables in the Vercel project (never commit `.env`).
 4. Point `PUBLIC_BASE_URL` (`https://…`) and `WS_BASE_URL` (`wss://…`) at the production hostname, or rely on Vercel URL fallbacks.
 
