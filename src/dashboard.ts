@@ -23,7 +23,8 @@ export function renderDashboard(): string {
       --radius: 18px;
     }
     * { box-sizing: border-box; }
-    html, body { margin: 0; min-height: 100%; }
+    html { -webkit-text-size-adjust: 100%; }
+    html, body { margin: 0; min-height: 100%; overflow-x: hidden; }
     body {
       font-family: "Segoe UI", "Avenir Next", Inter, ui-sans-serif, system-ui, sans-serif;
       background:
@@ -31,11 +32,14 @@ export function renderDashboard(): string {
         radial-gradient(900px 400px at 100% 0%, rgba(14, 165, 233, 0.08), transparent 45%),
         var(--navy);
       color: var(--text);
+      padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
     }
+    body.menu-open { overflow: hidden; }
     .app {
       display: grid;
-      grid-template-columns: 260px 1fr;
+      grid-template-columns: 260px minmax(0, 1fr);
       min-height: 100vh;
+      min-height: 100dvh;
     }
     .sidebar {
       background: linear-gradient(180deg, #0a172b 0%, #081322 100%);
@@ -44,7 +48,17 @@ export function renderDashboard(): string {
       position: sticky;
       top: 0;
       height: 100vh;
+      height: 100dvh;
+      overflow-y: auto;
     }
+    .nav-mask {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(2, 8, 20, 0.55);
+      z-index: 15;
+    }
+    .nav-mask.show { display: block; }
     .brand {
       display: flex;
       gap: 12px;
@@ -84,6 +98,7 @@ export function renderDashboard(): string {
       cursor: pointer;
       font-size: 14px;
       width: 100%;
+      min-height: 44px;
     }
     .nav-btn:hover, .nav-btn.active {
       background: rgba(59, 130, 246, 0.12);
@@ -92,7 +107,7 @@ export function renderDashboard(): string {
     .nav-btn.active {
       box-shadow: inset 3px 0 0 var(--blue);
     }
-    .content { padding: 28px; }
+    .content { padding: 28px; min-width: 0; }
     .topbar {
       display: flex;
       justify-content: space-between;
@@ -100,15 +115,25 @@ export function renderDashboard(): string {
       gap: 16px;
       margin-bottom: 22px;
     }
-    .topbar h2 { margin: 0 0 6px; font-size: 28px; }
+    .topbar-head {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      min-width: 0;
+      flex: 1;
+    }
+    .topbar-copy { min-width: 0; }
+    .topbar h2 { margin: 0 0 6px; font-size: clamp(22px, 4vw, 28px); overflow-wrap: anywhere; }
     .topbar p { margin: 0; color: var(--muted); }
     .menu {
       display: none;
+      flex: 0 0 auto;
       border: 1px solid var(--line);
       background: var(--panel);
       color: var(--text);
       border-radius: 10px;
       padding: 8px 12px;
+      min-height: 44px;
     }
     .grid-3, .grid-2, .lanes { display: grid; gap: 16px; }
     .grid-3 { grid-template-columns: repeat(3, 1fr); }
@@ -133,7 +158,8 @@ export function renderDashboard(): string {
       text-align: center;
     }
     .flow-step {
-      min-width: 180px;
+      min-width: 0;
+      width: min(100%, 240px);
       padding: 10px 14px;
       border-radius: 999px;
       background: rgba(59, 130, 246, 0.12);
@@ -147,22 +173,29 @@ export function renderDashboard(): string {
     }
     input, select, textarea {
       width: 100%;
+      max-width: 100%;
       background: #0b1730;
       color: var(--text);
       border: 1px solid var(--line);
       border-radius: 12px;
       padding: 11px 12px;
+      font-size: 16px;
+      min-height: 44px;
     }
     textarea { min-height: 120px; resize: vertical; }
     .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: end; }
-    .row > * { flex: 1; }
+    .row > * { flex: 1 1 140px; min-width: 0; }
+    .row-actions { display: flex; gap: 10px; flex: 1 1 220px; flex-wrap: wrap; }
+    .row-actions button { white-space: nowrap; flex: 1 1 auto; }
     .actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
+    .actions button { min-height: 44px; }
     button.primary, button.secondary, button.danger {
       border: 0;
       border-radius: 12px;
       padding: 11px 16px;
       cursor: pointer;
       font-weight: 650;
+      min-height: 44px;
     }
     button.primary { background: var(--blue); color: white; }
     button.secondary { background: #223552; color: var(--text); }
@@ -172,8 +205,9 @@ export function renderDashboard(): string {
       border: 0;
       cursor: pointer;
     }
-    table { width: 100%; border-collapse: collapse; font-size: 13px; }
-    th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--line); }
+    .table-wrap { overflow: auto; -webkit-overflow-scrolling: touch; margin-top: 16px; max-width: 100%; }
+    table { width: 100%; min-width: 640px; border-collapse: collapse; font-size: 13px; }
+    th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
     th { color: var(--muted); font-weight: 600; }
     .badge {
       display: inline-block;
@@ -222,16 +256,29 @@ export function renderDashboard(): string {
       font-weight: 700;
     }
     .setup-list .t { font-size: 13px; }
-    .kv { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+    .kv { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; overflow-wrap: anywhere; word-break: break-word; }
     .webhook {
       display: grid;
-      grid-template-columns: 140px 1fr;
+      grid-template-columns: minmax(110px, 160px) minmax(0, 1fr);
       gap: 8px 16px;
-      align-items: center;
+      align-items: start;
       padding: 10px 0;
       border-bottom: 1px solid var(--line);
     }
-    .muted { color: var(--muted); }
+    .fold {
+      margin: 0;
+    }
+    .fold > summary {
+      list-style: none;
+    }
+    .fold > summary::-webkit-details-marker { display: none; }
+    .fold > summary h3 { margin: 0; }
+    @media (min-width: 981px) {
+      .fold > summary { pointer-events: none; cursor: default; }
+    }
+    @media (max-width: 1200px) {
+      .grid-2 { grid-template-columns: 1fr; }
+    }
     @media (max-width: 980px) {
       .app { grid-template-columns: 1fr; }
       .sidebar {
@@ -239,12 +286,54 @@ export function renderDashboard(): string {
         z-index: 20;
         transform: translateX(-110%);
         transition: transform 0.2s ease;
-        width: 260px;
+        width: min(280px, 86vw);
+        padding-top: max(20px, env(safe-area-inset-top));
       }
       .sidebar.open { transform: none; }
-      .menu { display: inline-flex; }
-      .grid-3, .grid-2, .lanes { grid-template-columns: 1fr; }
+      .menu { display: inline-flex; align-items: center; }
+      .lanes { grid-template-columns: 1fr; }
       .content { padding: 18px; }
+      .stat .value { font-size: 30px; }
+      .fold > summary {
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        min-height: 44px;
+      }
+      .fold > summary::after {
+        content: "";
+        width: 8px;
+        height: 8px;
+        border-right: 2px solid var(--blue-2);
+        border-bottom: 2px solid var(--blue-2);
+        transform: rotate(45deg);
+        transition: transform 0.15s ease;
+        flex: 0 0 auto;
+      }
+      .fold[open] > summary::after {
+        transform: rotate(-135deg);
+        margin-top: 4px;
+      }
+    }
+    @media (max-width: 720px) {
+      .grid-3, .grid-2, .lanes { grid-template-columns: 1fr; }
+      .content { padding: 14px; }
+      .card { padding: 16px; }
+      .topbar { margin-bottom: 16px; }
+      .row-actions { flex: 1 1 100%; }
+      .row-actions button { flex: 1 1 140px; }
+      .webhook { grid-template-columns: 1fr; }
+      .setup-list .t { font-size: 12px; }
+      textarea { min-height: 96px; }
+    }
+    @media (max-width: 480px) {
+      .content { padding: 12px; }
+      .card { padding: 14px; border-radius: 14px; }
+      .brand { padding: 0 4px 18px; }
+      .stat .value { font-size: 26px; }
+      table { min-width: 520px; }
     }
   </style>
 </head>
@@ -266,12 +355,15 @@ export function renderDashboard(): string {
         <button class="nav-btn" data-page="setup">API Setup</button>
       </nav>
     </aside>
+    <div class="nav-mask" id="navMask"></div>
     <main class="content">
       <div class="topbar">
-        <div>
-          <button class="menu" id="menuBtn" type="button">Menu</button>
-          <h2 id="pageTitle">Dashboard</h2>
-          <p id="pageSubtitle">Operations overview for disclosed automated voice lines.</p>
+        <div class="topbar-head">
+          <button class="menu" id="menuBtn" type="button" aria-label="Open menu" aria-controls="sidebar" aria-expanded="false">Menu</button>
+          <div class="topbar-copy">
+            <h2 id="pageTitle">Dashboard</h2>
+            <p id="pageSubtitle">Operations overview for disclosed automated voice lines.</p>
+          </div>
         </div>
       </div>
 
@@ -304,49 +396,57 @@ export function renderDashboard(): string {
           </div>
         </div>
         <div class="card" style="margin-top:16px">
-          <h3>Number isolation</h3>
-          <p class="help">Inbound To selects one enabled profile. That call can speak only that profile's authorized facts. Number 1 never sees Number 2's facts.</p>
-          <div class="lanes">
-            <div class="flow">
-              <div class="flow-step">PHONE NUMBER #1</div>
-              <div class="flow-join">↓</div>
-              <div class="flow-step">PROFILE #1</div>
-              <div class="flow-join">↓</div>
-              <div class="flow-step">AUTHORIZED FACTS #1</div>
+          <details class="fold" id="isolationFold" open>
+            <summary><h3>Number isolation</h3></summary>
+            <p class="help">Inbound To selects one enabled profile. That call can speak only that profile's authorized facts. Number 1 never sees Number 2's facts.</p>
+            <div class="lanes">
+              <div class="flow">
+                <div class="flow-step">PHONE NUMBER #1</div>
+                <div class="flow-join">↓</div>
+                <div class="flow-step">PROFILE #1</div>
+                <div class="flow-join">↓</div>
+                <div class="flow-step">AUTHORIZED FACTS #1</div>
+              </div>
+              <div class="flow">
+                <div class="flow-step">PHONE NUMBER #2</div>
+                <div class="flow-join">↓</div>
+                <div class="flow-step">PROFILE #2</div>
+                <div class="flow-join">↓</div>
+                <div class="flow-step">AUTHORIZED FACTS #2</div>
+              </div>
+              <div class="flow">
+                <div class="flow-step">PHONE NUMBER #3</div>
+                <div class="flow-join">↓</div>
+                <div class="flow-step">PROFILE #3</div>
+                <div class="flow-join">↓</div>
+                <div class="flow-step">AUTHORIZED FACTS #3</div>
+              </div>
             </div>
-            <div class="flow">
-              <div class="flow-step">PHONE NUMBER #2</div>
-              <div class="flow-join">↓</div>
-              <div class="flow-step">PROFILE #2</div>
-              <div class="flow-join">↓</div>
-              <div class="flow-step">AUTHORIZED FACTS #2</div>
-            </div>
-            <div class="flow">
-              <div class="flow-step">PHONE NUMBER #3</div>
-              <div class="flow-join">↓</div>
-              <div class="flow-step">PROFILE #3</div>
-              <div class="flow-join">↓</div>
-              <div class="flow-step">AUTHORIZED FACTS #3</div>
-            </div>
-          </div>
+          </details>
         </div>
       </section>
 
       <section class="page" id="page-numbers">
         <div class="card">
-          <h3>Search US local numbers</h3>
+          <h3>Search and generate US local numbers</h3>
+          <p class="help">Twilio is the connected number provider. Search to pick a specific line, or generate a batch. Each generated number gets its own disabled profile. Repeat batches to scale toward thousands; one click buys at most 50 real PSTN numbers.</p>
           <div class="row">
             <div>
               <label for="areaCode">Area code</label>
               <input id="areaCode" maxlength="3" placeholder="201" />
             </div>
             <div>
+              <label for="numberQuantity">Quantity</label>
+              <input id="numberQuantity" type="number" min="1" max="50" value="1" />
+            </div>
+            <div class="row-actions">
               <button class="primary" id="searchNumbers" type="button">Search numbers</button>
+              <button class="secondary" id="generateNumbers" type="button">Generate numbers</button>
             </div>
           </div>
           <div class="notice" id="numbersNotice"></div>
           <div class="error" id="numbersError"></div>
-          <div style="overflow:auto; margin-top:16px">
+          <div class="table-wrap">
             <table>
               <thead>
                 <tr><th>Phone Number</th><th>City</th><th>Region</th><th></th></tr>
@@ -403,7 +503,7 @@ export function renderDashboard(): string {
             <button class="secondary" id="refreshCalls" type="button">Refresh</button>
           </div>
           <div class="error" id="callsError"></div>
-          <div style="overflow:auto; margin-top:12px">
+          <div class="table-wrap">
             <table>
               <thead>
                 <tr>
@@ -478,7 +578,7 @@ export function renderDashboard(): string {
   <script>
     const pages = {
       dashboard: ["Dashboard", "Operations overview for disclosed automated voice lines."],
-      numbers: ["Phone Numbers", "Search and purchase Twilio numbers, then configure the agent before enabling it."],
+      numbers: ["Phone Numbers", "Search Twilio inventory or generate a batch of numbers. Each line gets its own profile."],
       agents: ["Agent Profiles", "Approved facts, transfer number, disclosure, and voice pool for each line."],
       calls: ["Calls", "Newest sessions first. Refresh after placing a test call."],
       setup: ["API Setup", "Twenty-step stand-up: providers, SQL, env, deploy, then purchase and enable a number."]
@@ -528,15 +628,25 @@ export function renderDashboard(): string {
         $("page-" + page).classList.add("active");
         $("pageTitle").textContent = titles[page][0];
         $("pageSubtitle").textContent = titles[page][1];
-        $("sidebar").classList.remove("open");
+        setMenu(false);
         if (page === "dashboard") loadDashboard();
         if (page === "agents") loadProfiles();
         if (page === "calls") loadCalls();
         if (page === "setup") loadDashboard();
       });
     });
+    function setMenu(open) {
+      $("sidebar").classList.toggle("open", open);
+      $("navMask").classList.toggle("show", open);
+      document.body.classList.toggle("menu-open", open);
+      $("menuBtn").setAttribute("aria-expanded", open ? "true" : "false");
+    }
     $("menuBtn").addEventListener("click", function () {
-      $("sidebar").classList.toggle("open");
+      setMenu(!$("sidebar").classList.contains("open"));
+    });
+    $("navMask").addEventListener("click", function () { setMenu(false); });
+    document.addEventListener("keydown", function (event) {
+      if (event.key === "Escape") setMenu(false);
     });
 
     async function loadDashboard() {
@@ -591,6 +701,57 @@ export function renderDashboard(): string {
         });
       } catch (err) {
         show($("numbersError"), err.message);
+      }
+    });
+
+    $("generateNumbers").addEventListener("click", async function () {
+      hide($("numbersError"));
+      hide($("numbersNotice"));
+      const areaCode = $("areaCode").value.trim();
+      const quantity = Number($("numberQuantity").value || "1");
+      if (!/^[0-9]{3}$/.test(areaCode)) {
+        show($("numbersError"), "Enter a 3-digit US area code.");
+        return;
+      }
+      if (!Number.isInteger(quantity) || quantity < 1 || quantity > 50) {
+        show($("numbersError"), "Quantity must be between 1 and 50 per batch.");
+        return;
+      }
+      $("generateNumbers").disabled = true;
+      $("searchNumbers").disabled = true;
+      show($("numbersNotice"), "Generating " + quantity + " number(s) from Twilio in " + areaCode + "…");
+      try {
+        const data = await api("/api/numbers/generate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ areaCode: areaCode, quantity: quantity })
+        });
+        const body = $("numbersBody");
+        body.innerHTML = "";
+        if (!data.numbers || !data.numbers.length) {
+          body.innerHTML = '<tr><td colspan="4" class="muted">No numbers were generated.</td></tr>';
+        } else {
+          data.numbers.forEach(function (item) {
+            const tr = document.createElement("tr");
+            tr.innerHTML =
+              "<td>" + escapeHtml(item.phoneNumber) + "</td>" +
+              '<td colspan="2">' + escapeHtml(item.label || "") + "</td>" +
+              '<td><span class="badge ok">Generated</span></td>';
+            body.appendChild(tr);
+          });
+        }
+        show($("numbersNotice"), data.message || ("Generated " + data.purchased + " number(s)."));
+        if (data.failed && data.failed.length) {
+          show($("numbersError"), data.failed.length + " number(s) failed. Check Twilio inventory and try again.");
+        }
+        loadProfiles();
+        loadDashboard();
+      } catch (err) {
+        hide($("numbersNotice"));
+        show($("numbersError"), err.message);
+      } finally {
+        $("generateNumbers").disabled = false;
+        $("searchNumbers").disabled = false;
       }
     });
 
@@ -760,7 +921,99 @@ export function renderDashboard(): string {
     loadDashboard().catch(function (err) {
       console.error(err);
     });
+    (function () {
+      var fold = $("isolationFold");
+      if (!fold) return;
+      var mobile = window.matchMedia("(max-width: 980px)");
+      function syncFold() {
+        if (mobile.matches) fold.removeAttribute("open");
+        else fold.setAttribute("open", "");
+      }
+      syncFold();
+      if (mobile.addEventListener) mobile.addEventListener("change", syncFold);
+      else mobile.addListener(syncFold);
+    })();
   </script>
+</body>
+</html>`;
+}
+
+export function renderLogin(error = ""): string {
+  const errorHtml = error
+    ? `<div class="error">${error.replace(/</g, "&lt;")}</div>`
+    : "";
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sign in — AI Voice Platform</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; overflow-x: hidden; }
+    body {
+      font-family: "Segoe UI", "Avenir Next", Inter, ui-sans-serif, system-ui, sans-serif;
+      background: #07111f;
+      color: #eef4ff;
+      display: grid;
+      place-items: center;
+      padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+    }
+    .card {
+      width: min(420px, 100%);
+      background: #122038;
+      border: 1px solid rgba(147, 176, 214, 0.16);
+      border-radius: 18px;
+      padding: clamp(20px, 5vw, 28px);
+    }
+    h1 { margin: 0 0 6px; font-size: clamp(20px, 5vw, 22px); }
+    p { margin: 0 0 20px; color: #93a7c4; font-size: 14px; }
+    label { display: block; font-size: 13px; color: #93a7c4; margin: 12px 0 6px; }
+    input {
+      width: 100%;
+      background: #0b1730;
+      color: #eef4ff;
+      border: 1px solid rgba(147, 176, 214, 0.16);
+      border-radius: 12px;
+      padding: 11px 12px;
+      font: inherit;
+      font-size: 16px;
+      min-height: 44px;
+    }
+    button {
+      margin-top: 18px;
+      width: 100%;
+      border: 0;
+      border-radius: 12px;
+      padding: 12px 16px;
+      background: #3b82f6;
+      color: white;
+      font: inherit;
+      font-weight: 650;
+      cursor: pointer;
+      min-height: 44px;
+    }
+    .error {
+      margin: 0 0 16px;
+      padding: 12px 14px;
+      border-radius: 12px;
+      background: rgba(248, 113, 113, 0.12);
+      color: #f87171;
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+  <form class="card" method="post" action="/login">
+    <h1>AI Voice Platform</h1>
+    <p>Sign in to open the dashboard. The server is running.</p>
+    ${errorHtml}
+    <label for="username">Username</label>
+    <input id="username" name="username" autocomplete="username" autofocus />
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password" autocomplete="current-password" />
+    <button type="submit">Sign in</button>
+  </form>
 </body>
 </html>`;
 }

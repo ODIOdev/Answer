@@ -61,6 +61,12 @@ export const purchaseNumberSchema = z.object({
   label: z.string().trim().min(1).max(200),
 });
 
+export const generateNumbersSchema = z.object({
+  areaCode: z.string().regex(/^[0-9]{3}$/, "Enter a 3-digit US area code"),
+  quantity: z.coerce.number().int().min(1).max(50),
+  labelPrefix: z.string().trim().min(1).max(80).optional(),
+});
+
 export type AgentProfile = {
   id: string;
   label: string;

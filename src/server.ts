@@ -6,7 +6,7 @@ import websocket from "@fastify/websocket";
 import twilio from "twilio";
 import { z } from "zod";
 import { decideAgentResponse, isOpenAIConfigured } from "./agent.js";
-import { renderDashboard } from "./dashboard.js";
+import { renderDashboard, renderLogin } from "./dashboard.js";
 import {
   attachSession,
   createCall,
@@ -33,6 +33,7 @@ import {
 import {
   assertSafeAuthorizedFacts,
   DEFAULT_DISCLOSURE,
+  generateNumbersSchema,
   purchaseNumberSchema,
   updateProfileSchema,
   type AgentProfile,
@@ -92,10 +93,35 @@ function checkBasicAuth(header: string | string[] | undefined): boolean {
   if (sep < 0) return false;
   const username = decoded.slice(0, sep);
   const password = decoded.slice(sep + 1);
+  return checkCredentials(username, password);
+}
+
+function checkCredentials(username: string, password: string): boolean {
   return (
     safeEqual(username, process.env.ADMIN_USERNAME || "admin") &&
     safeEqual(password, process.env.ADMIN_PASSWORD || "CHANGE-THIS-PASSWORD")
   );
+}
+
+function cookieValue(
+  header: string | string[] | undefined,
+  name: string
+): string | undefined {
+  const raw = Array.isArray(header) ? header.join("; ") : header;
+  if (!raw) return undefined;
+  for (const part of raw.split(";")) {
+    const piece = part.trim();
+    if (piece.startsWith(`${name}=`)) {
+      return decodeURIComponent(piece.slice(name.length + 1));
+    }
+  }
+  return undefined;
+}
+
+function checkCookieAuth(header: string | string[] | undefined): boolean {
+  const token = cookieValue(header, "avp_auth");
+  if (!token) return false;
+  return checkBasicAuth(`Basic ${token}`);
 }
 
 function getTwilioClient() {
@@ -203,6 +229,45 @@ function transferNumberFor(profile?: AgentProfile | null, override?: string): st
   );
 }
 
+async function provisionTwilioNumber(input: {
+  phoneNumber: string;
+  label: string;
+}): Promise<{
+  profile: Awaited<ReturnType<typeof createProfile>>;
+  twilioPhoneSid: string;
+}> {
+  if (!hasPublicVoiceUrls()) {
+    throw new Error("Set PUBLIC_BASE_URL before purchasing a number so Twilio can reach /voice.");
+  }
+  const urls = publicUrls();
+  const client = getTwilioClient();
+  const incoming = await client.incomingPhoneNumbers.create({
+    phoneNumber: input.phoneNumber,
+    voiceUrl: urls.voiceWebhook,
+    voiceMethod: "POST",
+    statusCallback: urls.statusCallback,
+    statusCallbackMethod: "POST",
+  });
+  try {
+    const profile = await createProfile({
+      label: input.label,
+      phone_number: incoming.phoneNumber,
+      twilio_phone_sid: incoming.sid,
+      enabled: false,
+    });
+    return { profile, twilioPhoneSid: incoming.sid };
+  } catch (error) {
+    const wrapped = new Error(
+      "Number was purchased in Twilio but the profile could not be saved. Do not purchase it again. Retry after Supabase is healthy."
+    );
+    (wrapped as Error & { twilioPhoneSid?: string; phoneNumber?: string }).twilioPhoneSid =
+      incoming.sid;
+    (wrapped as Error & { twilioPhoneSid?: string; phoneNumber?: string }).phoneNumber =
+      incoming.phoneNumber;
+    throw wrapped;
+  }
+}
+
 function logTranscript(callSid: string, turn: TranscriptTurn): void {
   if (process.env.LOG_FULL_TRANSCRIPTS === "true") {
     app.log.info({ callSid, role: turn.role, text: turn.text }, "call transcript");
@@ -304,7 +369,16 @@ app.addHook("onRequest", async (request, reply) => {
   reply.header("X-Frame-Options", "DENY");
   reply.header("Referrer-Policy", "no-referrer");
   if (!needsAdmin(path)) return;
-  if (checkBasicAuth(request.headers.authorization)) return;
+  if (
+    checkBasicAuth(request.headers.authorization) ||
+    checkCookieAuth(request.headers.cookie)
+  ) {
+    return;
+  }
+  if (request.method === "GET" && path === "/") {
+    reply.code(401).type("text/html; charset=utf-8");
+    return reply.send(renderLogin());
+  }
   reply.header("WWW-Authenticate", 'Basic realm="AI Voice Platform"');
   return reply.code(401).send("Authentication required");
 });
@@ -344,6 +418,26 @@ app.get("/", async (_request, reply) => {
   reply.header("Cache-Control", "no-store");
   reply.type("text/html; charset=utf-8");
   return renderDashboard();
+});
+
+app.post("/login", async (request, reply) => {
+  const username = formValue(request.body, "username") || "";
+  const password = formValue(request.body, "password") || "";
+  if (!checkCredentials(username, password)) {
+    reply.code(401).type("text/html; charset=utf-8");
+    return reply.send(renderLogin("Username or password is incorrect."));
+  }
+  const token = Buffer.from(`${username}:${password}`, "utf8").toString("base64");
+  reply.header(
+    "Set-Cookie",
+    `avp_auth=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400`
+  );
+  return reply.redirect("/", 303);
+});
+
+app.post("/logout", async (_request, reply) => {
+  reply.header("Set-Cookie", "avp_auth=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0");
+  return reply.redirect("/", 303);
 });
 
 app.get("/api/dashboard", async (request) => {
@@ -440,7 +534,7 @@ app.get("/api/numbers/search", async (request, reply) => {
   const numbers = await client.availablePhoneNumbers("US").local.list({
     areaCode: Number(query.data.areaCode),
     voiceEnabled: true,
-    limit: 10,
+    limit: 30,
   });
   return {
     numbers: numbers.map((item) => ({
@@ -456,27 +550,8 @@ app.post("/api/numbers/purchase", async (request, reply) => {
   if (!parsed.success) {
     return reply.code(400).send({ error: parsed.error.issues[0]?.message || "Invalid purchase request" });
   }
-  if (!hasPublicVoiceUrls()) {
-    return reply.code(400).send({
-      error: "Set PUBLIC_BASE_URL before purchasing a number so Twilio can reach /voice.",
-    });
-  }
-  const urls = publicUrls();
-  const client = getTwilioClient();
-  const incoming = await client.incomingPhoneNumbers.create({
-    phoneNumber: parsed.data.phoneNumber,
-    voiceUrl: urls.voiceWebhook,
-    voiceMethod: "POST",
-    statusCallback: urls.statusCallback,
-    statusCallbackMethod: "POST",
-  });
   try {
-    const profile = await createProfile({
-      label: parsed.data.label,
-      phone_number: incoming.phoneNumber,
-      twilio_phone_sid: incoming.sid,
-      enabled: false,
-    });
+    const { profile } = await provisionTwilioNumber(parsed.data);
     return {
       ok: true,
       message:
@@ -484,21 +559,85 @@ app.post("/api/numbers/purchase", async (request, reply) => {
       profile,
     };
   } catch (error) {
-    request.log.error(
-      {
-        err: error instanceof Error ? error.message : "unknown",
-        twilioPhoneSid: incoming.sid,
-        phoneNumber: incoming.phoneNumber,
-      },
-      "Twilio number purchased but profile insert failed"
-    );
-    return reply.code(500).send({
-      error:
-        "Number was purchased in Twilio but the profile could not be saved. Do not purchase it again. Retry after Supabase is healthy.",
-      twilioPhoneSid: incoming.sid,
-      phoneNumber: incoming.phoneNumber,
+    const extra = error as Error & { twilioPhoneSid?: string; phoneNumber?: string };
+    if (extra.twilioPhoneSid) {
+      request.log.error(
+        {
+          err: extra.message,
+          twilioPhoneSid: extra.twilioPhoneSid,
+          phoneNumber: extra.phoneNumber,
+        },
+        "Twilio number purchased but profile insert failed"
+      );
+      return reply.code(500).send({
+        error: extra.message,
+        twilioPhoneSid: extra.twilioPhoneSid,
+        phoneNumber: extra.phoneNumber,
+      });
+    }
+    throw error;
+  }
+});
+
+app.post("/api/numbers/generate", async (request, reply) => {
+  const parsed = generateNumbersSchema.safeParse(request.body);
+  if (!parsed.success) {
+    return reply.code(400).send({
+      error: parsed.error.issues[0]?.message || "Invalid generate request",
     });
   }
+  if (!hasPublicVoiceUrls()) {
+    return reply.code(400).send({
+      error: "Set PUBLIC_BASE_URL before generating numbers so Twilio can reach /voice.",
+    });
+  }
+  const { areaCode, quantity } = parsed.data;
+  const labelPrefix = parsed.data.labelPrefix || `AC${areaCode}`;
+  const client = getTwilioClient();
+  const purchased: Array<{ phoneNumber: string; label: string }> = [];
+  const failed: Array<{ phoneNumber?: string; error: string }> = [];
+  const seen = new Set<string>();
+
+  while (purchased.length < quantity) {
+    const remaining = quantity - purchased.length;
+    const available = await client.availablePhoneNumbers("US").local.list({
+      areaCode: Number(areaCode),
+      voiceEnabled: true,
+      limit: Math.min(30, Math.max(remaining + 5, remaining)),
+    });
+    const candidates = available.filter(
+      (item) => item.phoneNumber && !seen.has(item.phoneNumber)
+    );
+    if (candidates.length === 0) break;
+
+    for (const item of candidates) {
+      if (purchased.length >= quantity) break;
+      const phoneNumber = item.phoneNumber;
+      seen.add(phoneNumber);
+      const label = `${labelPrefix} ${phoneNumber}`;
+      try {
+        await provisionTwilioNumber({ phoneNumber, label });
+        purchased.push({ phoneNumber, label });
+      } catch (error) {
+        failed.push({
+          phoneNumber,
+          error: error instanceof Error ? error.message : "unknown",
+        });
+      }
+    }
+  }
+
+  return {
+    ok: purchased.length > 0,
+    requested: quantity,
+    purchased: purchased.length,
+    numbers: purchased,
+    failed,
+    message:
+      purchased.length === 0
+        ? "No voice-enabled US local numbers were available in that area code."
+        : `Generated ${purchased.length} number${purchased.length === 1 ? "" : "s"}. Profiles stay disabled until authorized facts and a human transfer number are saved.`,
+  };
 });
 
 app.post("/api/numbers/sync-webhooks", async (request, reply) => {
