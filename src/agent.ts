@@ -9,8 +9,26 @@ import {
 const DEFAULT_MODEL = "gpt-5.4";
 const MAX_TRANSCRIPT_TURNS = 12;
 
+type OpenAIClient = {
+  responses: {
+    create: (
+      body: {
+        model: string;
+        instructions: string;
+        input: Array<{ role: "user" | "assistant" | "system"; content: string }>;
+        max_output_tokens: number;
+      },
+      options?: { timeout?: number }
+    ) => Promise<{ output_text?: string | null }>;
+  };
+};
+
+const OpenAIClient = OpenAI as unknown as new (opts: {
+  apiKey?: string;
+}) => OpenAIClient;
+
 function makeOpenAI() {
-  return new OpenAI({
+  return new OpenAIClient({
     apiKey: process.env.OPENAI_API_KEY,
   });
 }
