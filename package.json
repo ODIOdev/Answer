@@ -5,7 +5,7 @@
   "description": "Multi-number AI telephone platform with Twilio ConversationRelay, OpenAI, and Supabase.",
   "type": "module",
   "engines": {
-    "node": ">=22"
+    "node": "22.x"
   },
   "scripts": {
     "dev": "tsx watch src/server.ts",
