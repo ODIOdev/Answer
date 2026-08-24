@@ -9,15 +9,37 @@ import {
 const DEFAULT_MODEL = "gpt-5.4";
 const MAX_TRANSCRIPT_TURNS = 12;
 
-let openai: OpenAI | null = null;
+type ResponsesClient = {
+  responses: {
+    create: (body: {
+      model: string;
+      instructions: string;
+      input: string;
+      max_output_tokens: number;
+    }) => Promise<{
+      output_text?: string | null;
+      output?: Array<{
+        type?: string;
+        content?: Array<{ type?: string; text?: string }>;
+      }>;
+    }>;
+  };
+};
 
-function getOpenAI(): OpenAI {
+let openai: ResponsesClient | null = null;
+
+function getOpenAI(): ResponsesClient {
   if (openai) return openai;
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
     throw new Error("OPENAI_API_KEY is not configured");
   }
-  openai = new OpenAI({
+  const OpenAIClient = OpenAI as unknown as new (opts: {
+    apiKey: string;
+    timeout: number;
+    maxRetries: number;
+  }) => ResponsesClient;
+  openai = new OpenAIClient({
     apiKey,
     timeout: 20_000,
     maxRetries: 1,
